@@ -17,18 +17,6 @@ var _path = require("path");
 
 var _path2 = _interopRequireDefault(_path);
 
-var _request = require("request");
-
-var _request2 = _interopRequireDefault(_request);
-
-var _requestPromise = require("request-promise");
-
-var _requestPromise2 = _interopRequireDefault(_requestPromise);
-
-var _requestProgress = require("request-progress");
-
-var _requestProgress2 = _interopRequireDefault(_requestProgress);
-
 var _progress = require("progress");
 
 var _progress2 = _interopRequireDefault(_progress);
@@ -40,6 +28,10 @@ var _extractZip2 = _interopRequireDefault(_extractZip);
 var _child_process = require("child_process");
 
 var _filesize = require("filesize");
+
+var _axios = require("axios");
+
+var _axios2 = _interopRequireDefault(_axios);
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
@@ -61,9 +53,7 @@ const readDotFlywayFile = () => {
 /**
  * @returns sources[os.platform()]
  */
-const getReleaseSource = exports.getReleaseSource = () => (0, _requestPromise2.default)({
-  uri: `${repoBaseUrl}/maven-metadata.xml`
-}).then(response => {
+const getReleaseSource = exports.getReleaseSource = () => _axios2.default.get(`${repoBaseUrl}/maven-metadata.xml`).then(response => {
   let releaseRegularExp = new RegExp("<release>(.+)</release>");
   let releaseVersion = readDotFlywayFile() || response.match(releaseRegularExp)[1];
 
@@ -131,53 +121,63 @@ const downloadFlywaySource = exports.downloadFlywaySource = source => {
 
   return new Promise((resolve, reject) => {
     let proxyUrl = env.npm_config_https_proxy || env.npm_config_http_proxy || env.npm_config_proxy;
-    let downloadOptions = {
-      uri: source.url,
-      encoding: null, // Get response as a buffer
-      followRedirect: true,
+
+    const progressBar = new _progress2.default("  [:bar] :percent :etas", {
+      width: 40,
+      total: 0 // Initial total set to 0; will update on first progress event
+    });
+
+    // axios by default enforces strict SSL validation
+    // axios by default automatically follows redirect
+    (0, _axios2.default)({
+      method: 'get',
+      url: source.url,
+      // ensures the response is returned as a raw buffer
+      responseType: 'arraybuffer',
+      proxy: proxyUrl ? {
+        host: new URL(proxyUrl).hostname,
+        port: new URL(proxyUrl).port
+      } : false,
       headers: {
-        "User-Agent": env.npm_config_user_agent
+        'User-Agent': env.npm_config_user_agent || 'axios'
       },
-      strictSSL: true,
-      proxy: proxyUrl
-    };
-    let consoleDownloadBar;
-
-    (0, _requestProgress2.default)((0, _request2.default)(downloadOptions, (error, response, body) => {
-      if (!error && response.statusCode === 200) {
-        _fsExtra2.default.writeFileSync(source.filename, body);
-
-        console.log(`\nReceived ${(0, _filesize.filesize)(body.length)} total.`);
-
-        resolve(source.filename);
-      } else if (response) {
-        console.error(`
-        Error requesting source.
-        Status: ${response.statusCode}
-        Request options: ${JSON.stringify(downloadOptions, null, 2)}
-        Response headers: ${JSON.stringify(response.headers, null, 2)}
-        Make sure your network and proxy settings are correct.
-
-        If you continue to have issues, please report this full log at https://github.com/sgraham/flywaydb-cli`);
-        process.exit(1);
-      } else {
-        console.error("Error downloading : ", error);
-        process.exit(1);
-      }
-    })).on("progress", state => {
-      try {
-        if (!consoleDownloadBar) {
-          consoleDownloadBar = new _progress2.default("  [:bar] :percent", {
-            total: state.size.total,
-            width: 40
-          });
+      onDownloadProgress: progressEvent => {
+        if (!progressBar.total) {
+          // set total on first progress event
+          progressBar.total = progressEvent.total;
         }
 
-        consoleDownloadBar.curr = state.size.transferred;
-        consoleDownloadBar.tick();
-      } catch (e) {
-        console.log("error", e);
+        // how much data we have transferred so far
+        progressBar.curr = progressEvent.loaded;
+        progressBar.tick();
       }
+    }).then(response => {
+      const totalLength = response.headers['content-length'];
+
+      // write downloaded file data to disk
+      const writer = _fsExtra2.default.createWriteStream(source.filename);
+      response.data.pipe(writer);
+
+      writer.on('finish', () => {
+        console.log(`\nReceived ${(0, _filesize.filesize)(totalLength)} total.`);
+        resolve(source.filename);
+      });
+
+      writer.on('error', err => {
+        console.error("Error writing file: ", err);
+        reject(err);
+      });
+    }).catch(err => {
+      console.error(`
+        Error requesting source.
+        URL: ${source.url}
+        Proxy URL: ${proxyUrl || 'none'}
+        Error: ${err.message}
+        Make sure your network and proxy settings are correct.
+
+        If you continue to have issues, please report this full log at https://github.com/sgraham/flywaydb-cli
+      `);
+      reject(err);
     });
   });
 };
