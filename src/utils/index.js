@@ -36,7 +36,7 @@ export const getReleaseSource = () =>
   axios.get(`${repoBaseUrl}/maven-metadata.xml`).then(response => {
     let releaseRegularExp = new RegExp("<release>(.+)</release>");
     let releaseVersion =
-      readDotFlywayFile() || response.match(releaseRegularExp)[1];
+      readDotFlywayFile() || response.data.match(releaseRegularExp)[1];
 
     // console.log("getReleaseSource releaseVersion -> ", releaseVersion);
     let sources = {
