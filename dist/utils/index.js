@@ -55,7 +55,7 @@ const readDotFlywayFile = () => {
  */
 const getReleaseSource = exports.getReleaseSource = () => _axios2.default.get(`${repoBaseUrl}/maven-metadata.xml`).then(response => {
   let releaseRegularExp = new RegExp("<release>(.+)</release>");
-  let releaseVersion = readDotFlywayFile() || response.match(releaseRegularExp)[1];
+  let releaseVersion = readDotFlywayFile() || response.data.match(releaseRegularExp)[1];
 
   // console.log("getReleaseSource releaseVersion -> ", releaseVersion);
   let sources = {
