@@ -121,8 +121,8 @@ export const downloadFlywaySource = source => {
     axios({
       method: 'get',
       url: source.url,
-      // ensures the response is returned as a raw buffer
-      responseType: 'arraybuffer',
+      // ensures the response is returned as a stream
+      responseType: 'stream',
       proxy: proxyUrl
         ? {
           host: new URL(proxyUrl).hostname,
@@ -132,21 +132,20 @@ export const downloadFlywaySource = source => {
       headers: {
         'User-Agent': env.npm_config_user_agent || 'axios',
       },
-      onDownloadProgress: (progressEvent) => {
-        if (!progressBar.total) {
-          // set total on first progress event
-          progressBar.total = progressEvent.total;
-        }
-
-        // how much data we have transferred so far
-        progressBar.curr = progressEvent.loaded;
-        progressBar.tick();
-      },
     }).then(response => {
+      // set total on first progress event
       const totalLength = response.headers['content-length'];
+
+      if (totalLength) {
+        progressBar.total = parseInt(totalLength, 10);
+      }
 
       // write downloaded file data to disk
       const writer = fs.createWriteStream(source.filename);
+      response.data.on('data', chunk => {
+        // update progress bar based on how much data we have transferred so far
+        progressBar.tick(chunk.length);
+      });
       response.data.pipe(writer);
 
       writer.on('finish', () => {
