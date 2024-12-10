@@ -1,13 +1,11 @@
 import os from "os";
 import fs from "fs-extra";
 import path from "path";
-import request from "request";
-import rp from "request-promise";
-import requestProgress from "request-progress";
 import ProgressBar from "progress";
 import extractZip from "extract-zip";
 import { spawn } from "child_process";
 import { filesize } from "filesize";
+import axios from 'axios'
 const env = process.env;
 
 const repoBaseUrl =
@@ -35,12 +33,10 @@ const readDotFlywayFile = () => {
  * @returns sources[os.platform()]
  */
 export const getReleaseSource = () =>
-  rp({
-    uri: `${repoBaseUrl}/maven-metadata.xml`
-  }).then(response => {
+  axios.get(`${repoBaseUrl}/maven-metadata.xml`).then(response => {
     let releaseRegularExp = new RegExp("<release>(.+)</release>");
     let releaseVersion =
-      readDotFlywayFile() || response.match(releaseRegularExp)[1];
+      readDotFlywayFile() || response.data.match(releaseRegularExp)[1];
 
     // console.log("getReleaseSource releaseVersion -> ", releaseVersion);
     let sources = {
@@ -114,55 +110,64 @@ export const downloadFlywaySource = source => {
       env.npm_config_https_proxy ||
       env.npm_config_http_proxy ||
       env.npm_config_proxy;
-    let downloadOptions = {
-      uri: source.url,
-      encoding: null, // Get response as a buffer
-      followRedirect: true,
-      headers: {
-        "User-Agent": env.npm_config_user_agent
-      },
-      strictSSL: true,
+
+    const progressBar = new ProgressBar("  [:bar] :percent :etas", {
+      width: 40,
+      total: 0, // Initial total set to 0; will update on first progress event
+    });
+
+    // axios by default enforces strict SSL validation
+    // axios by default automatically follows redirect
+    axios({
+      method: 'get',
+      url: source.url,
+      // ensures the response is returned as a stream
+      responseType: 'stream',
       proxy: proxyUrl
-    };
-    let consoleDownloadBar;
+        ? {
+          host: new URL(proxyUrl).hostname,
+          port: new URL(proxyUrl).port,
+        }
+        : false,
+      headers: {
+        'User-Agent': env.npm_config_user_agent || 'axios',
+      },
+    }).then(response => {
+      // set total on first progress event
+      const totalLength = response.headers['content-length'];
 
-    requestProgress(
-      request(downloadOptions, (error, response, body) => {
-        if (!error && response.statusCode === 200) {
-          fs.writeFileSync(source.filename, body);
+      if (totalLength) {
+        progressBar.total = parseInt(totalLength, 10);
+      }
 
-          console.log(`\nReceived ${filesize(body.length)} total.`);
+      // write downloaded file data to disk
+      const writer = fs.createWriteStream(source.filename);
+      response.data.on('data', chunk => {
+        // update progress bar based on how much data we have transferred so far
+        progressBar.tick(chunk.length);
+      });
+      response.data.pipe(writer);
 
-          resolve(source.filename);
-        } else if (response) {
-          console.error(`
+      writer.on('finish', () => {
+        console.log(`\nReceived ${filesize(totalLength)} total.`);
+        resolve(source.filename);
+      });
+
+      writer.on('error', err => {
+        console.error("Error writing file: ", err);
+        reject(err);
+      });
+    }).catch(err => {
+      console.error(`
         Error requesting source.
-        Status: ${response.statusCode}
-        Request options: ${JSON.stringify(downloadOptions, null, 2)}
-        Response headers: ${JSON.stringify(response.headers, null, 2)}
+        URL: ${source.url}
+        Proxy URL: ${proxyUrl || 'none'}
+        Error: ${err.message}
         Make sure your network and proxy settings are correct.
 
-        If you continue to have issues, please report this full log at https://github.com/sgraham/flywaydb-cli`);
-          process.exit(1);
-        } else {
-          console.error("Error downloading : ", error);
-          process.exit(1);
-        }
-      })
-    ).on("progress", state => {
-      try {
-        if (!consoleDownloadBar) {
-          consoleDownloadBar = new ProgressBar("  [:bar] :percent", {
-            total: state.size.total,
-            width: 40
-          });
-        }
-
-        consoleDownloadBar.curr = state.size.transferred;
-        consoleDownloadBar.tick();
-      } catch (e) {
-        console.log("error", e);
-      }
+        If you continue to have issues, please report this full log at https://github.com/sgraham/flywaydb-cli
+      `);
+      reject(err);
     });
   });
 };
